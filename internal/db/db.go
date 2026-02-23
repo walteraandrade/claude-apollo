@@ -7,7 +7,8 @@ import (
 )
 
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	// _time_format is a DSN param (not PRAGMA) — requires file: URI scheme to be parsed
+	db, err := sql.Open("sqlite", "file:"+path+"?_time_format=sqlite")
 	if err != nil {
 		return nil, err
 	}

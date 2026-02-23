@@ -212,6 +212,34 @@ func TestUpdateLastCommitHash(t *testing.T) {
 	}
 }
 
+func TestTimeRoundTrip(t *testing.T) {
+	h := testDB(t)
+	repoID := h.mustRepo()
+
+	want := time.Date(2025, 6, 15, 10, 30, 45, 0, time.UTC)
+	if err := InsertCommit(h.db, repoID, "timetest", "alice", "msg", "", "main", want); err != nil {
+		t.Fatal(err)
+	}
+
+	commits, err := ListCommits(h.db, repoID, FilterAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("len = %d, want 1", len(commits))
+	}
+	if !commits[0].CommittedAt.Equal(want) {
+		t.Errorf("time = %v, want %v", commits[0].CommittedAt, want)
+	}
+}
+
+func TestOpenBadPath(t *testing.T) {
+	_, err := Open("/dev/null/nope")
+	if err == nil {
+		t.Fatal("expected error for invalid path")
+	}
+}
+
 func TestInsertEvent(t *testing.T) {
 	h := testDB(t)
 	if err := InsertEvent(h.db, "commit_detected", "abc123", `{"branch":"main"}`); err != nil {
