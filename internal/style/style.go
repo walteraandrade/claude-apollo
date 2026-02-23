@@ -3,62 +3,96 @@ package style
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	Unreviewed = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	Reviewed   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	Ignored    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
 	HeaderBar = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("220")).
+			Background(SlateDeep).
+			Foreground(Blue).
 			Bold(true).
 			Padding(0, 2)
 
 	StatusBar = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("252")).
+			Background(SlateDeep).
+			Foreground(WhiteMuted).
 			Padding(0, 2)
 
 	Selected = lipgloss.NewStyle().
-			Background(lipgloss.Color("237")).
-			Foreground(lipgloss.Color("255")).
+			Background(Slate).
+			Foreground(White).
 			Bold(true)
 
 	Normal = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252"))
+		Foreground(White)
 
 	Muted = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
+		Foreground(WhiteMuted)
 
 	DetailLabel = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("220")).
+			Foreground(Blue).
 			Bold(true)
 
 	DetailValue = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+			Foreground(White)
 
 	Border = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240"))
+		BorderForeground(BlueDim)
 
 	Error = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("196"))
+		Foreground(ErrColor)
 
 	HelpKey = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("220")).
+		Foreground(BlueBright).
 		Bold(true)
 
 	HelpDesc = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
+		Foreground(WhiteMuted)
+
+	CardBorder = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(BlueDim).
+			Background(SlateDark).
+			Padding(0, 1)
+
+	CardSelected = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(BlueBright).
+			Background(Slate).
+			Padding(0, 1)
+
+	CardExpanded = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Blue).
+			Background(Slate).
+			Padding(0, 1)
+
+	ColHeaderActive = lipgloss.NewStyle().
+			Foreground(Blue).
+			Bold(true)
+
+	ColHeaderInactive = lipgloss.NewStyle().
+				Foreground(WhiteMuted)
+
+	CardHash = lipgloss.NewStyle().
+			Foreground(BlueBright).
+			Bold(true)
+
+	CardSubject = lipgloss.NewStyle().
+			Foreground(White)
+
+	CardMeta = lipgloss.NewStyle().
+			Foreground(WhiteMuted)
+
+	ColDivStyle = lipgloss.NewStyle().
+			Foreground(BlueDim)
 )
 
 func StatusIcon(status string) string {
 	switch status {
 	case "unreviewed":
-		return Unreviewed.Render("●")
+		return lipgloss.NewStyle().Foreground(StatusNeedsReview).Render("●")
 	case "reviewed":
-		return Reviewed.Render("✓")
+		return lipgloss.NewStyle().Foreground(StatusReviewed).Render("✓")
 	case "ignored":
-		return Ignored.Render("○")
+		return lipgloss.NewStyle().Foreground(StatusIgnored).Render("○")
 	default:
 		return " "
 	}
@@ -67,11 +101,11 @@ func StatusIcon(status string) string {
 func FilterLabel(filter string) string {
 	switch filter {
 	case "unreviewed":
-		return Unreviewed.Render("UNREVIEWED")
+		return lipgloss.NewStyle().Foreground(StatusNeedsReview).Render("UNREVIEWED")
 	case "reviewed":
-		return Reviewed.Render("REVIEWED")
+		return lipgloss.NewStyle().Foreground(StatusReviewed).Render("REVIEWED")
 	case "ignored":
-		return Ignored.Render("IGNORED")
+		return lipgloss.NewStyle().Foreground(StatusIgnored).Render("IGNORED")
 	default:
 		return Normal.Render("ALL")
 	}

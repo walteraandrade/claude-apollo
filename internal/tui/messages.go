@@ -40,6 +40,12 @@ type ReviewUpdatedMsg struct {
 	Status string
 }
 
+type CopiedMsg struct {
+	Hash string
+}
+
+type CopyFlashTickMsg struct{}
+
 type ErrorMsg struct {
 	Err error
 }

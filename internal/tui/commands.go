@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/walter/apollo/internal/config"
 	"github.com/walter/apollo/internal/db"
 	"github.com/walter/apollo/internal/git"
@@ -79,7 +80,7 @@ func (m Model) persistCommits(commits []git.CommitInfo) tea.Cmd {
 
 func (m Model) loadCommits() tea.Cmd {
 	return func() tea.Msg {
-		commits, err := db.ListCommits(m.database, m.repoID, m.filter)
+		commits, err := db.ListCommits(m.database, m.repoID, db.FilterAll)
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}
@@ -141,6 +142,13 @@ func (m Model) updateReview(hash, status string) tea.Cmd {
 			return ErrorMsg{Err: err}
 		}
 		return ReviewUpdatedMsg{Hash: hash, Status: status}
+	}
+}
+
+func (m Model) copyHashCmd(hash string) tea.Cmd {
+	return func() tea.Msg {
+		fmt.Print(osc52.New(hash).String())
+		return CopiedMsg{Hash: hash}
 	}
 }
 

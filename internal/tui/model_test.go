@@ -41,112 +41,214 @@ func seedTestCommits(t *testing.T, m *Model, n int) {
 	}
 }
 
+func loadAndPartition(t *testing.T, m *Model) {
+	t.Helper()
+	commits, err := db.ListCommits(m.database, m.repoID, db.FilterAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := db.GetStats(m.database, m.repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.stats = stats
+	m.partitionCommits(commits)
+}
+
 func TestNewModelDefaults(t *testing.T) {
 	m := testModel(t)
-	if m.filter != db.FilterUnreviewed {
-		t.Errorf("filter = %q, want unreviewed", m.filter)
+	if m.screen != ScreenBoard {
+		t.Errorf("screen = %d, want ScreenBoard", m.screen)
 	}
-	if m.screen != ScreenList {
-		t.Errorf("screen = %d, want ScreenList", m.screen)
-	}
-}
-
-func TestNextFilter(t *testing.T) {
-	tests := []struct {
-		in   db.ReviewFilter
-		want db.ReviewFilter
-	}{
-		{db.FilterUnreviewed, db.FilterAll},
-		{db.FilterAll, db.FilterReviewed},
-		{db.FilterReviewed, db.FilterIgnored},
-		{db.FilterIgnored, db.FilterUnreviewed},
-	}
-	for _, tt := range tests {
-		got := nextFilter(tt.in)
-		if got != tt.want {
-			t.Errorf("nextFilter(%q) = %q, want %q", tt.in, got, tt.want)
-		}
+	if m.activeCol != ColNeedsReview {
+		t.Errorf("activeCol = %d, want ColNeedsReview", m.activeCol)
 	}
 }
 
-func TestNavigationKeys(t *testing.T) {
+func TestPartitionCommits(t *testing.T) {
 	m := testModel(t)
 	seedTestCommits(t, &m, 5)
-
-	m.width = 80
+	m.width = 120
 	m.height = 24
-	commits, _ := db.ListCommits(m.database, m.repoID, db.FilterAll)
-	m.commits = commits
-	m.filter = db.FilterAll
 
-	if m.cursor != 0 {
+	loadAndPartition(t, &m)
+
+	if len(m.columns[ColNeedsReview].Commits) != 5 {
+		t.Errorf("needs review = %d, want 5", len(m.columns[ColNeedsReview].Commits))
+	}
+	if len(m.columns[ColReviewed].Commits) != 0 {
+		t.Errorf("reviewed = %d, want 0", len(m.columns[ColReviewed].Commits))
+	}
+	if len(m.columns[ColIgnored].Commits) != 0 {
+		t.Errorf("ignored = %d, want 0", len(m.columns[ColIgnored].Commits))
+	}
+}
+
+func TestColumnNavigation(t *testing.T) {
+	m := testModel(t)
+	seedTestCommits(t, &m, 3)
+	m.width = 120
+	m.height = 24
+	loadAndPartition(t, &m)
+
+	if m.activeCol != ColNeedsReview {
+		t.Fatal("should start on ColNeedsReview")
+	}
+
+	// Move right
+	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	rm := result.(Model)
+	if rm.activeCol != ColReviewed {
+		t.Errorf("after l: activeCol = %d, want ColReviewed", rm.activeCol)
+	}
+
+	// Move right again
+	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	rm = result.(Model)
+	if rm.activeCol != ColIgnored {
+		t.Errorf("after l+l: activeCol = %d, want ColIgnored", rm.activeCol)
+	}
+
+	// Can't go past last
+	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	rm = result.(Model)
+	if rm.activeCol != ColIgnored {
+		t.Errorf("should stay on ColIgnored, got %d", rm.activeCol)
+	}
+
+	// Move left
+	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	rm = result.(Model)
+	if rm.activeCol != ColReviewed {
+		t.Errorf("after h: activeCol = %d, want ColReviewed", rm.activeCol)
+	}
+}
+
+func TestCardNavigation(t *testing.T) {
+	m := testModel(t)
+	seedTestCommits(t, &m, 5)
+	m.width = 120
+	m.height = 24
+	loadAndPartition(t, &m)
+
+	col := &m.columns[ColNeedsReview]
+	if col.Cursor != 0 {
 		t.Fatal("cursor should start at 0")
 	}
 
 	// Down
 	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	rm := result.(Model)
-	if rm.cursor != 1 {
-		t.Errorf("after j: cursor = %d, want 1", rm.cursor)
+	if rm.columns[ColNeedsReview].Cursor != 1 {
+		t.Errorf("after j: cursor = %d, want 1", rm.columns[ColNeedsReview].Cursor)
 	}
 
 	// Up
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	rm = result.(Model)
-	if rm.cursor != 0 {
-		t.Errorf("after k: cursor = %d, want 0", rm.cursor)
+	if rm.columns[ColNeedsReview].Cursor != 0 {
+		t.Errorf("after k: cursor = %d, want 0", rm.columns[ColNeedsReview].Cursor)
 	}
 
 	// Don't go below 0
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	rm = result.(Model)
-	if rm.cursor != 0 {
-		t.Errorf("cursor should not go below 0, got %d", rm.cursor)
+	if rm.columns[ColNeedsReview].Cursor != 0 {
+		t.Errorf("cursor should not go below 0, got %d", rm.columns[ColNeedsReview].Cursor)
 	}
 }
 
-func TestDetailScreenToggle(t *testing.T) {
+func TestCardExpansion(t *testing.T) {
 	m := testModel(t)
 	seedTestCommits(t, &m, 3)
-	m.width = 80
+	m.width = 120
 	m.height = 24
-	commits, _ := db.ListCommits(m.database, m.repoID, db.FilterAll)
-	m.commits = commits
-	m.filter = db.FilterAll
+	loadAndPartition(t, &m)
 
-	// Enter detail
+	// Enter expands
 	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	rm := result.(Model)
-	if rm.screen != ScreenDetail {
-		t.Errorf("screen = %d, want ScreenDetail", rm.screen)
+	expected := m.columns[ColNeedsReview].Commits[0].Hash
+	if rm.expandedHash != expected {
+		t.Errorf("expandedHash = %q, want %q", rm.expandedHash, expected)
 	}
 
-	// Esc back
+	// Enter again collapses
+	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	rm = result.(Model)
+	if rm.expandedHash != "" {
+		t.Errorf("expandedHash should be empty after toggle, got %q", rm.expandedHash)
+	}
+
+	// Expand then esc collapses
+	result, _ = m.updateKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	rm = result.(Model)
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyEsc})
 	rm = result.(Model)
-	if rm.screen != ScreenList {
-		t.Errorf("screen = %d, want ScreenList", rm.screen)
+	if rm.expandedHash != "" {
+		t.Errorf("expandedHash should be empty after esc, got %q", rm.expandedHash)
+	}
+}
+
+func TestStatusChangeMovesBetweenColumns(t *testing.T) {
+	m := testModel(t)
+	seedTestCommits(t, &m, 3)
+	m.width = 120
+	m.height = 24
+	loadAndPartition(t, &m)
+
+	if len(m.columns[ColNeedsReview].Commits) != 3 {
+		t.Fatalf("needs review = %d, want 3", len(m.columns[ColNeedsReview].Commits))
+	}
+
+	hash := m.columns[ColNeedsReview].Commits[0].Hash
+	db.UpdateReviewStatus(m.database, hash, "reviewed", "")
+
+	loadAndPartition(t, &m)
+
+	if len(m.columns[ColNeedsReview].Commits) != 2 {
+		t.Errorf("needs review after move = %d, want 2", len(m.columns[ColNeedsReview].Commits))
+	}
+	if len(m.columns[ColReviewed].Commits) != 1 {
+		t.Errorf("reviewed after move = %d, want 1", len(m.columns[ColReviewed].Commits))
 	}
 }
 
 func TestCommitsLoadedMsg(t *testing.T) {
 	m := testModel(t)
-	m.width = 80
+	m.width = 120
 	m.height = 24
-	m.cursor = 99
 
 	msg := CommitsLoadedMsg{
-		Commits: []db.CommitRow{{Hash: "abc1234"}},
-		Stats:   db.Stats{Total: 1, Unreviewed: 1},
+		Commits: []db.CommitRow{
+			{Hash: "abc1234", Status: "unreviewed"},
+			{Hash: "def5678", Status: "reviewed"},
+		},
+		Stats: db.Stats{Total: 2, Unreviewed: 1, Reviewed: 1},
 	}
 
 	result, _ := m.Update(msg)
 	rm := result.(Model)
-	if rm.cursor != 0 {
-		t.Errorf("cursor should clamp to 0, got %d", rm.cursor)
+	if len(rm.columns[ColNeedsReview].Commits) != 1 {
+		t.Errorf("needs review = %d, want 1", len(rm.columns[ColNeedsReview].Commits))
 	}
-	if len(rm.commits) != 1 {
-		t.Errorf("commits len = %d, want 1", len(rm.commits))
+	if len(rm.columns[ColReviewed].Commits) != 1 {
+		t.Errorf("reviewed = %d, want 1", len(rm.columns[ColReviewed].Commits))
+	}
+}
+
+func TestCopyAction(t *testing.T) {
+	m := testModel(t)
+	seedTestCommits(t, &m, 1)
+	m.width = 120
+	m.height = 24
+	loadAndPartition(t, &m)
+
+	result, cmd := m.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	rm := result.(Model)
+	_ = rm
+	if cmd == nil {
+		t.Error("copy should return a command")
 	}
 }
 
@@ -158,22 +260,31 @@ func TestMapKey(t *testing.T) {
 		{"q", ActionQuit},
 		{"j", ActionDown},
 		{"k", ActionUp},
+		{"h", ActionLeft},
+		{"l", ActionRight},
 		{"r", ActionReview},
 		{"u", ActionUnreview},
 		{"i", ActionIgnore},
-		{"tab", ActionCycleFilter},
+		{"c", ActionCopy},
 		{"n", ActionNote},
 	}
 	for _, tt := range tests {
-		var msg tea.KeyMsg
-		if tt.key == "tab" {
-			msg = tea.KeyMsg{Type: tea.KeyTab}
-		} else {
-			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
-		}
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
 		got := MapKey(msg)
 		if got != tt.want {
 			t.Errorf("MapKey(%q) = %d, want %d", tt.key, got, tt.want)
 		}
+	}
+}
+
+func TestTabCyclesColumns(t *testing.T) {
+	m := testModel(t)
+	m.width = 120
+	m.height = 24
+
+	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyTab})
+	rm := result.(Model)
+	if rm.activeCol != ColReviewed {
+		t.Errorf("after tab: activeCol = %d, want ColReviewed", rm.activeCol)
 	}
 }

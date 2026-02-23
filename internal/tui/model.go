@@ -2,6 +2,7 @@ package tui
 
 import (
 	"database/sql"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,10 +17,40 @@ import (
 type Screen int
 
 const (
-	ScreenList Screen = iota
-	ScreenDetail
+	ScreenBoard Screen = iota
 	ScreenNote
 )
+
+type ColumnID int
+
+const (
+	ColNeedsReview ColumnID = iota
+	ColReviewed
+	ColIgnored
+	NumColumns = 3
+)
+
+type BoardColumn struct {
+	ID      ColumnID
+	Title   string
+	Status  string
+	Commits []db.CommitRow
+	Cursor  int
+	Scroll  int
+}
+
+func (col *BoardColumn) Selected() *db.CommitRow {
+	if len(col.Commits) == 0 || col.Cursor >= len(col.Commits) {
+		return nil
+	}
+	return &col.Commits[col.Cursor]
+}
+
+func (col *BoardColumn) ClampCursor() {
+	if col.Cursor >= len(col.Commits) {
+		col.Cursor = max(0, len(col.Commits)-1)
+	}
+}
 
 type Model struct {
 	cfg      config.Config
@@ -31,12 +62,13 @@ type Model struct {
 	watchCh   <-chan watcher.Event
 	watchStop func()
 
-	screen    Screen
-	commits   []db.CommitRow
-	cursor    int
-	filter    db.ReviewFilter
-	stats     db.Stats
-	noteInput textinput.Model
+	screen       Screen
+	columns      [NumColumns]BoardColumn
+	activeCol    ColumnID
+	expandedHash string
+	copiedHash   string
+	stats        db.Stats
+	noteInput    textinput.Model
 
 	width  int
 	height int
@@ -48,13 +80,24 @@ func NewModel(cfg config.Config, database *sql.DB, n notifier.Notifier) Model {
 	ti.Placeholder = "Enter note..."
 	ti.CharLimit = 256
 
-	return Model{
+	m := Model{
 		cfg:       cfg,
 		database:  database,
 		notifier:  n,
-		filter:    db.FilterUnreviewed,
 		noteInput: ti,
 	}
+
+	m.columns[ColNeedsReview] = BoardColumn{
+		ID: ColNeedsReview, Title: "Needs Review", Status: "unreviewed",
+	}
+	m.columns[ColReviewed] = BoardColumn{
+		ID: ColReviewed, Title: "Reviewed", Status: "reviewed",
+	}
+	m.columns[ColIgnored] = BoardColumn{
+		ID: ColIgnored, Title: "Ignored", Status: "ignored",
+	}
+
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -102,14 +145,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadCommits()
 
 	case CommitsLoadedMsg:
-		m.commits = msg.Commits
 		m.stats = msg.Stats
-		if m.cursor >= len(m.commits) {
-			m.cursor = max(0, len(m.commits)-1)
-		}
+		m.partitionCommits(msg.Commits)
 
 	case ReviewUpdatedMsg:
 		return m, m.loadCommits()
+
+	case CopiedMsg:
+		m.copiedHash = msg.Hash
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+			return CopyFlashTickMsg{}
+		})
+
+	case CopyFlashTickMsg:
+		m.copiedHash = ""
 
 	case ErrorMsg:
 		m.err = msg.Err
@@ -118,55 +167,90 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) partitionCommits(all []db.CommitRow) {
+	buckets := [NumColumns][]db.CommitRow{}
+	for _, c := range all {
+		switch c.Status {
+		case "unreviewed":
+			buckets[ColNeedsReview] = append(buckets[ColNeedsReview], c)
+		case "reviewed":
+			buckets[ColReviewed] = append(buckets[ColReviewed], c)
+		case "ignored":
+			buckets[ColIgnored] = append(buckets[ColIgnored], c)
+		}
+	}
+	for i := range NumColumns {
+		m.columns[i].Commits = buckets[i]
+		m.columns[i].ClampCursor()
+	}
+}
+
 func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	action := MapKey(msg)
+	col := &m.columns[m.activeCol]
 
 	switch action {
 	case ActionQuit:
 		return m, m.quit()
 
 	case ActionUp:
-		if m.cursor > 0 {
-			m.cursor--
+		m.expandedHash = ""
+		if col.Cursor > 0 {
+			col.Cursor--
 		}
 
 	case ActionDown:
-		if m.cursor < len(m.commits)-1 {
-			m.cursor++
+		m.expandedHash = ""
+		if col.Cursor < len(col.Commits)-1 {
+			col.Cursor++
 		}
 
+	case ActionLeft:
+		m.expandedHash = ""
+		if m.activeCol > 0 {
+			m.activeCol--
+		}
+
+	case ActionRight:
+		m.expandedHash = ""
+		if m.activeCol < NumColumns-1 {
+			m.activeCol++
+		}
+
+	case ActionExpand:
+		if c := col.Selected(); c != nil {
+			if m.expandedHash == c.Hash {
+				m.expandedHash = ""
+			} else {
+				m.expandedHash = c.Hash
+			}
+		}
+
+	case ActionBack:
+		m.expandedHash = ""
+
 	case ActionReview:
-		if c := m.selectedCommit(); c != nil {
+		if c := col.Selected(); c != nil {
 			return m, m.updateReview(c.Hash, "reviewed")
 		}
 
 	case ActionUnreview:
-		if c := m.selectedCommit(); c != nil {
+		if c := col.Selected(); c != nil {
 			return m, m.updateReview(c.Hash, "unreviewed")
 		}
 
 	case ActionIgnore:
-		if c := m.selectedCommit(); c != nil {
+		if c := col.Selected(); c != nil {
 			return m, m.updateReview(c.Hash, "ignored")
 		}
 
-	case ActionDetail:
-		if len(m.commits) > 0 {
-			m.screen = ScreenDetail
+	case ActionCopy:
+		if c := col.Selected(); c != nil {
+			return m, m.copyHashCmd(c.Hash[:min(7, len(c.Hash))])
 		}
-
-	case ActionBack:
-		if m.screen == ScreenDetail {
-			m.screen = ScreenList
-		}
-
-	case ActionCycleFilter:
-		m.filter = nextFilter(m.filter)
-		m.cursor = 0
-		return m, m.loadCommits()
 
 	case ActionNote:
-		if c := m.selectedCommit(); c != nil {
+		if c := col.Selected(); c != nil {
 			m.noteInput.SetValue(c.Note)
 			m.noteInput.Focus()
 			m.screen = ScreenNote
@@ -181,15 +265,15 @@ func (m Model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if c := m.selectedCommit(); c != nil {
 			note := m.noteInput.Value()
-			m.screen = ScreenList
+			m.screen = ScreenBoard
 			return m, func() tea.Msg {
 				db.UpdateReviewStatus(m.database, c.Hash, c.Status, note)
 				return ReviewUpdatedMsg{Hash: c.Hash, Status: c.Status}
 			}
 		}
-		m.screen = ScreenList
+		m.screen = ScreenBoard
 	case "esc":
-		m.screen = ScreenList
+		m.screen = ScreenBoard
 	default:
 		var cmd tea.Cmd
 		m.noteInput, cmd = m.noteInput.Update(msg)
@@ -207,10 +291,8 @@ func (m Model) View() string {
 	var body string
 
 	switch m.screen {
-	case ScreenList:
-		body = m.listView()
-	case ScreenDetail:
-		body = m.detailView()
+	case ScreenBoard:
+		body = m.boardView()
 	case ScreenNote:
 		body = m.noteInputView()
 	}
@@ -219,14 +301,11 @@ func (m Model) View() string {
 	status := m.statusBar()
 	help := m.helpBar()
 
-	return header + "\n" + body + "\n\n" + errLine + "\n" + status + "\n" + help
+	return header + "\n" + body + "\n" + errLine + "\n" + status + "\n" + help
 }
 
 func (m Model) selectedCommit() *db.CommitRow {
-	if m.cursor >= len(m.commits) {
-		return nil
-	}
-	return &m.commits[m.cursor]
+	return m.columns[m.activeCol].Selected()
 }
 
 func (m Model) quit() tea.Cmd {
@@ -234,19 +313,4 @@ func (m Model) quit() tea.Cmd {
 		m.watchStop()
 	}
 	return tea.Quit
-}
-
-func nextFilter(f db.ReviewFilter) db.ReviewFilter {
-	switch f {
-	case db.FilterUnreviewed:
-		return db.FilterAll
-	case db.FilterAll:
-		return db.FilterReviewed
-	case db.FilterReviewed:
-		return db.FilterIgnored
-	case db.FilterIgnored:
-		return db.FilterUnreviewed
-	default:
-		return db.FilterUnreviewed
-	}
 }

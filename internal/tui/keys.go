@@ -9,12 +9,14 @@ const (
 	ActionQuit
 	ActionUp
 	ActionDown
+	ActionLeft
+	ActionRight
 	ActionReview
 	ActionUnreview
 	ActionIgnore
-	ActionDetail
+	ActionExpand
 	ActionBack
-	ActionCycleFilter
+	ActionCopy
 	ActionNote
 )
 
@@ -26,6 +28,10 @@ func MapKey(msg tea.KeyMsg) Action {
 		return ActionUp
 	case "j", "down":
 		return ActionDown
+	case "h", "left":
+		return ActionLeft
+	case "l", "right":
+		return ActionRight
 	case "r":
 		return ActionReview
 	case "u":
@@ -33,11 +39,15 @@ func MapKey(msg tea.KeyMsg) Action {
 	case "i":
 		return ActionIgnore
 	case "enter":
-		return ActionDetail
+		return ActionExpand
 	case "esc":
 		return ActionBack
+	case "c":
+		return ActionCopy
 	case "tab":
-		return ActionCycleFilter
+		return ActionRight
+	case "shift+tab":
+		return ActionLeft
 	case "n":
 		return ActionNote
 	default:
