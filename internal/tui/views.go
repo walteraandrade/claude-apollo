@@ -17,13 +17,39 @@ func (m Model) statusBar() string {
 			m.stats.Unreviewed, m.stats.Reviewed, m.stats.Ignored)
 	}
 
-	watcherStatus := style.Muted.Render("watching")
-	if m.watchCh == nil {
-		watcherStatus = style.Error.Render("not watching")
-	}
-
+	watcherStatus := m.watcherStatusText()
 	left = left + "  " + watcherStatus
 	return style.StatusBar.Render(lipgloss.PlaceHorizontal(m.width, lipgloss.Left, left))
+}
+
+func (m Model) watcherStatusText() string {
+	if len(m.handles) == 0 {
+		return style.Error.Render("no repos")
+	}
+
+	total := 0
+	active := 0
+	errored := 0
+	for _, h := range m.handles {
+		total++
+		if h.Err != nil {
+			errored++
+		} else if h.WatchCh != nil {
+			active++
+		}
+	}
+
+	if total == 1 {
+		if active == 1 {
+			return style.Muted.Render("watching")
+		}
+		return style.Error.Render("not watching")
+	}
+
+	if errored > 0 {
+		return style.Error.Render(fmt.Sprintf("watching %d/%d repos (%d errors)", active, total, errored))
+	}
+	return style.Muted.Render(fmt.Sprintf("watching %d repos", active))
 }
 
 func (m Model) helpBar() string {

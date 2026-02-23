@@ -91,3 +91,68 @@ func TestExpandHome(t *testing.T) {
 		t.Error("empty path should be unchanged")
 	}
 }
+
+func TestResolvedPathsSingleRepo(t *testing.T) {
+	cfg := Config{RepoPath: "/a"}
+	got := cfg.ResolvedPaths()
+	if len(got) != 1 || got[0] != "/a" {
+		t.Errorf("got %v, want [/a]", got)
+	}
+}
+
+func TestResolvedPathsMerge(t *testing.T) {
+	cfg := Config{RepoPath: "/a", RepoPaths: []string{"/b", "/c"}}
+	got := cfg.ResolvedPaths()
+	if len(got) != 3 {
+		t.Fatalf("got %v, want 3 paths", got)
+	}
+	if got[0] != "/a" || got[1] != "/b" || got[2] != "/c" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestResolvedPathsDedup(t *testing.T) {
+	cfg := Config{RepoPath: "/a", RepoPaths: []string{"/a", "/b"}}
+	got := cfg.ResolvedPaths()
+	if len(got) != 2 {
+		t.Fatalf("got %v, want [/a /b]", got)
+	}
+}
+
+func TestResolvedPathsEmpty(t *testing.T) {
+	cfg := Config{}
+	got := cfg.ResolvedPaths()
+	if len(got) != 0 {
+		t.Errorf("got %v, want empty", got)
+	}
+}
+
+func TestResolvedPathsExpandsHome(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cfg := Config{RepoPaths: []string{"~/foo"}}
+	got := cfg.ResolvedPaths()
+	want := filepath.Join(home, "foo")
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("got %v, want [%s]", got, want)
+	}
+}
+
+func TestEnvOverrideRepoPaths(t *testing.T) {
+	orig := os.Getenv("HOME")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	defer t.Setenv("HOME", orig)
+
+	t.Setenv("APOLLO_REPO_PATHS", "/x,/y,/z")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RepoPaths) != 3 {
+		t.Fatalf("RepoPaths = %v, want 3 items", cfg.RepoPaths)
+	}
+	if cfg.RepoPaths[0] != "/x" || cfg.RepoPaths[1] != "/y" || cfg.RepoPaths[2] != "/z" {
+		t.Errorf("RepoPaths = %v", cfg.RepoPaths)
+	}
+}

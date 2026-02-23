@@ -44,6 +44,24 @@ func GetRepoByPath(db *sql.DB, path string) (*Repository, error) {
 	return r, nil
 }
 
+func ListActiveRepos(db *sql.DB) ([]Repository, error) {
+	rows, err := db.Query(`SELECT id, name, path, active, last_commit_hash FROM repositories WHERE active = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []Repository
+	for rows.Next() {
+		var r Repository
+		if err := rows.Scan(&r.ID, &r.Name, &r.Path, &r.Active, &r.LastCommitHash); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 func UpdateLastCommitHash(db *sql.DB, repoID int64, hash string) error {
 	_, err := db.Exec(`UPDATE repositories SET last_commit_hash = ? WHERE id = ?`, hash, repoID)
 	return err

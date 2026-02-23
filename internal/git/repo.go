@@ -58,7 +58,7 @@ func (r *Repo) ReadNewCommits(sinceHash string, limit int) ([]CommitInfo, error)
 		if c.Hash.String() == sinceHash {
 			return errStop
 		}
-		if len(commits) >= limit {
+		if sinceHash == "" && len(commits) >= limit {
 			return errStop
 		}
 

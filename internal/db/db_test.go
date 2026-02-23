@@ -31,6 +31,14 @@ func (h *testHelper) mustRepo() int64 {
 	return id
 }
 
+func (h *testHelper) mustRepoAt(name, path string) int64 {
+	id, err := UpsertRepo(h.db, name, path)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return id
+}
+
 func TestOpenAndMigrate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	db, err := Open(path)
@@ -103,6 +111,9 @@ func TestInsertAndListCommits(t *testing.T) {
 	}
 	if commits[0].Status != "unreviewed" {
 		t.Errorf("status = %q, want unreviewed", commits[0].Status)
+	}
+	if commits[0].RepoName != "test" {
+		t.Errorf("repo_name = %q, want test", commits[0].RepoName)
 	}
 }
 
@@ -244,5 +255,75 @@ func TestInsertEvent(t *testing.T) {
 	h := testDB(t)
 	if err := InsertEvent(h.db, "commit_detected", "abc123", `{"branch":"main"}`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestListAllCommits(t *testing.T) {
+	h := testDB(t)
+	repoA := h.mustRepoAt("alpha", "/tmp/alpha")
+	repoB := h.mustRepoAt("beta", "/tmp/beta")
+	now := time.Now()
+
+	InsertCommit(h.db, repoA, "a1", "alice", "alpha commit", "", "main", now)
+	InsertCommit(h.db, repoB, "b1", "bob", "beta commit", "", "main", now.Add(time.Minute))
+
+	commits, err := ListAllCommits(h.db, []int64{repoA, repoB}, FilterAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("len = %d, want 2", len(commits))
+	}
+	if commits[0].RepoName != "beta" {
+		t.Errorf("first commit repo = %q, want beta (most recent)", commits[0].RepoName)
+	}
+	if commits[1].RepoName != "alpha" {
+		t.Errorf("second commit repo = %q, want alpha", commits[1].RepoName)
+	}
+}
+
+func TestListAllCommitsEmpty(t *testing.T) {
+	h := testDB(t)
+	_ = h
+	commits, err := ListAllCommits(h.db, nil, FilterAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 0 {
+		t.Errorf("expected empty, got %d", len(commits))
+	}
+}
+
+func TestGetAggregateStats(t *testing.T) {
+	h := testDB(t)
+	repoA := h.mustRepoAt("alpha", "/tmp/alpha")
+	repoB := h.mustRepoAt("beta", "/tmp/beta")
+	now := time.Now()
+
+	InsertCommit(h.db, repoA, "a1", "alice", "msg", "", "main", now)
+	InsertCommit(h.db, repoA, "a2", "alice", "msg", "", "main", now.Add(time.Minute))
+	InsertCommit(h.db, repoB, "b1", "bob", "msg", "", "main", now.Add(2*time.Minute))
+	UpdateReviewStatus(h.db, "a2", "reviewed", "")
+
+	stats, err := GetAggregateStats(h.db, []int64{repoA, repoB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 3 || stats.Unreviewed != 2 || stats.Reviewed != 1 {
+		t.Errorf("stats = %+v", stats)
+	}
+}
+
+func TestListActiveRepos(t *testing.T) {
+	h := testDB(t)
+	h.mustRepoAt("alpha", "/tmp/alpha")
+	h.mustRepoAt("beta", "/tmp/beta")
+
+	repos, err := ListActiveRepos(h.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("len = %d, want 2", len(repos))
 	}
 }

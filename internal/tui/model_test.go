@@ -21,18 +21,20 @@ func testModel(t *testing.T) Model {
 	t.Cleanup(func() { database.Close() })
 
 	cfg := config.Defaults()
-	cfg.RepoPath = t.TempDir()
+	cfg.RepoPaths = []string{t.TempDir()}
 
 	return NewModel(cfg, database, &notifier.Fallback{})
 }
 
 func seedTestCommits(t *testing.T, m *Model, n int) {
 	t.Helper()
-	repoID, err := db.UpsertRepo(m.database, "test", m.cfg.RepoPath)
+	path := m.cfg.ResolvedPaths()[0]
+	repoID, err := db.UpsertRepo(m.database, "test", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.repoID = repoID
+	m.handles = []RepoHandle{{Path: path, Name: "test", RepoID: repoID}}
+	m.handleIdx = map[string]int{path: 0}
 
 	now := time.Now()
 	for i := range n {
@@ -43,11 +45,12 @@ func seedTestCommits(t *testing.T, m *Model, n int) {
 
 func loadAndPartition(t *testing.T, m *Model) {
 	t.Helper()
-	commits, err := db.ListCommits(m.database, m.repoID, db.FilterAll)
+	ids := m.repoIDs()
+	commits, err := db.ListAllCommits(m.database, ids, db.FilterAll)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, err := db.GetStats(m.database, m.repoID)
+	stats, err := db.GetAggregateStats(m.database, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,28 +98,24 @@ func TestColumnNavigation(t *testing.T) {
 		t.Fatal("should start on ColNeedsReview")
 	}
 
-	// Move right
 	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	rm := result.(Model)
 	if rm.activeCol != ColReviewed {
 		t.Errorf("after l: activeCol = %d, want ColReviewed", rm.activeCol)
 	}
 
-	// Move right again
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	rm = result.(Model)
 	if rm.activeCol != ColIgnored {
 		t.Errorf("after l+l: activeCol = %d, want ColIgnored", rm.activeCol)
 	}
 
-	// Can't go past last
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
 	rm = result.(Model)
 	if rm.activeCol != ColIgnored {
 		t.Errorf("should stay on ColIgnored, got %d", rm.activeCol)
 	}
 
-	// Move left
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	rm = result.(Model)
 	if rm.activeCol != ColReviewed {
@@ -136,21 +135,18 @@ func TestCardNavigation(t *testing.T) {
 		t.Fatal("cursor should start at 0")
 	}
 
-	// Down
 	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	rm := result.(Model)
 	if rm.columns[ColNeedsReview].Cursor != 1 {
 		t.Errorf("after j: cursor = %d, want 1", rm.columns[ColNeedsReview].Cursor)
 	}
 
-	// Up
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	rm = result.(Model)
 	if rm.columns[ColNeedsReview].Cursor != 0 {
 		t.Errorf("after k: cursor = %d, want 0", rm.columns[ColNeedsReview].Cursor)
 	}
 
-	// Don't go below 0
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	rm = result.(Model)
 	if rm.columns[ColNeedsReview].Cursor != 0 {
@@ -165,7 +161,6 @@ func TestCardExpansion(t *testing.T) {
 	m.height = 24
 	loadAndPartition(t, &m)
 
-	// Enter expands
 	result, _ := m.updateKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	rm := result.(Model)
 	expected := m.columns[ColNeedsReview].Commits[0].Hash
@@ -173,14 +168,12 @@ func TestCardExpansion(t *testing.T) {
 		t.Errorf("expandedHash = %q, want %q", rm.expandedHash, expected)
 	}
 
-	// Enter again collapses
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	rm = result.(Model)
 	if rm.expandedHash != "" {
 		t.Errorf("expandedHash should be empty after toggle, got %q", rm.expandedHash)
 	}
 
-	// Expand then esc collapses
 	result, _ = m.updateKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	rm = result.(Model)
 	result, _ = rm.updateKeys(tea.KeyMsg{Type: tea.KeyEsc})
@@ -286,5 +279,35 @@ func TestTabCyclesColumns(t *testing.T) {
 	rm := result.(Model)
 	if rm.activeCol != ColReviewed {
 		t.Errorf("after tab: activeCol = %d, want ColReviewed", rm.activeCol)
+	}
+}
+
+func TestMultiRepoHandles(t *testing.T) {
+	m := testModel(t)
+	pathA := t.TempDir()
+	pathB := t.TempDir()
+
+	repoA, _ := db.UpsertRepo(m.database, "alpha", pathA)
+	repoB, _ := db.UpsertRepo(m.database, "beta", pathB)
+
+	m.handles = []RepoHandle{
+		{Path: pathA, Name: "alpha", RepoID: repoA},
+		{Path: pathB, Name: "beta", RepoID: repoB},
+	}
+	m.handleIdx = map[string]int{pathA: 0, pathB: 1}
+
+	ids := m.repoIDs()
+	if len(ids) != 2 {
+		t.Fatalf("repoIDs len = %d, want 2", len(ids))
+	}
+
+	h := m.handleByPath(pathA)
+	if h == nil || h.Name != "alpha" {
+		t.Error("handleByPath failed for alpha")
+	}
+
+	h = m.handleByPath("/nonexistent")
+	if h != nil {
+		t.Error("handleByPath should return nil for unknown path")
 	}
 }

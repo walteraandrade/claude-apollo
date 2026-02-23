@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/walter/apollo/internal/config"
 	"github.com/walter/apollo/internal/db"
-	"github.com/walter/apollo/internal/git"
 	"github.com/walter/apollo/internal/notifier"
 	"github.com/walter/apollo/internal/style"
 	"github.com/walter/apollo/internal/watcher"
@@ -57,10 +56,9 @@ type Model struct {
 	database *sql.DB
 	notifier notifier.Notifier
 
-	repo      *git.Repo
-	repoID    int64
-	watchCh   <-chan watcher.Event
-	watchStop func()
+	handles  []RepoHandle
+	handleIdx map[string]int
+	mux      *watcher.Mux
 
 	screen       Screen
 	columns      [NumColumns]BoardColumn
@@ -84,6 +82,7 @@ func NewModel(cfg config.Config, database *sql.DB, n notifier.Notifier) Model {
 		cfg:       cfg,
 		database:  database,
 		notifier:  n,
+		handleIdx: make(map[string]int),
 		noteInput: ti,
 	}
 
@@ -101,7 +100,7 @@ func NewModel(cfg config.Config, database *sql.DB, n notifier.Notifier) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.initRepo()
+	return m.initRepos()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -116,40 +115,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateKeys(msg)
 
-	case RepoInitializedMsg:
-		m.repoID = msg.RepoID
-		m.repo = msg.Repo
-		return m, m.seedCommits()
-
-	case SeedDoneMsg:
-		if len(msg.Commits) > 0 {
-			return m, tea.Batch(m.persistCommits(msg.Commits), m.startWatcher())
+	case ReposInitializedMsg:
+		m.handles = msg.Handles
+		m.handleIdx = make(map[string]int, len(msg.Handles))
+		for i, h := range msg.Handles {
+			m.handleIdx[h.Path] = i
 		}
-		return m, tea.Batch(m.loadCommits(), m.startWatcher())
+		return m, m.seedAllCommits()
 
-	case WatcherReadyMsg:
-		m.watchCh = msg.Ch
-		m.watchStop = msg.Stop
-		return m, m.listenWatcher()
+	case AllSeedDoneMsg:
+		if len(msg.PerRepo) > 0 {
+			return m, tea.Batch(m.persistAllCommits(msg.PerRepo), m.startAllWatchers())
+		}
+		return m, tea.Batch(m.loadAllCommits(), m.startAllWatchers())
+
+	case WatchersReadyMsg:
+		m.mux = msg.Mux
+		return m, m.listenMux()
 
 	case WatcherEventMsg:
-		return m, tea.Batch(m.readNewCommits(), m.listenWatcher())
+		return m, tea.Batch(m.readNewCommitsForRepo(msg.RepoPath), m.listenMux())
 
 	case NewCommitsMsg:
 		if len(msg.Commits) == 0 {
 			return m, nil
 		}
-		return m, m.persistCommits(msg.Commits)
+		return m, m.persistCommits(msg.RepoID, msg.Commits)
 
 	case CommitsPersistedMsg:
-		return m, m.loadCommits()
+		return m, m.loadAllCommits()
 
 	case CommitsLoadedMsg:
 		m.stats = msg.Stats
 		m.partitionCommits(msg.Commits)
 
 	case ReviewUpdatedMsg:
-		return m, m.loadCommits()
+		return m, m.loadAllCommits()
 
 	case CopiedMsg:
 		m.copiedHash = msg.Hash
@@ -183,6 +184,23 @@ func (m *Model) partitionCommits(all []db.CommitRow) {
 		m.columns[i].Commits = buckets[i]
 		m.columns[i].ClampCursor()
 	}
+}
+
+func (m Model) repoIDs() []int64 {
+	var ids []int64
+	for _, h := range m.handles {
+		if h.Err == nil && h.RepoID != 0 {
+			ids = append(ids, h.RepoID)
+		}
+	}
+	return ids
+}
+
+func (m Model) handleByPath(path string) *RepoHandle {
+	if idx, ok := m.handleIdx[path]; ok {
+		return &m.handles[idx]
+	}
+	return nil
 }
 
 func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -309,8 +327,13 @@ func (m Model) selectedCommit() *db.CommitRow {
 }
 
 func (m Model) quit() tea.Cmd {
-	if m.watchStop != nil {
-		m.watchStop()
+	for _, h := range m.handles {
+		if h.Stop != nil {
+			h.Stop()
+		}
+	}
+	if m.mux != nil {
+		m.mux.Close()
 	}
 	return tea.Quit
 }

@@ -4,14 +4,39 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	RepoPath   string `toml:"repo_path"`
-	SeedDepth  int    `toml:"seed_depth"`
-	DebounceMs int    `toml:"debounce_ms"`
+	RepoPath   string   `toml:"repo_path"`
+	RepoPaths  []string `toml:"repo_paths"`
+	SeedDepth  int      `toml:"seed_depth"`
+	DebounceMs int      `toml:"debounce_ms"`
+}
+
+func (c Config) ResolvedPaths() []string {
+	seen := make(map[string]struct{})
+	var result []string
+	add := func(p string) {
+		p = ExpandHome(strings.TrimSpace(p))
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		result = append(result, p)
+	}
+	if c.RepoPath != "" {
+		add(c.RepoPath)
+	}
+	for _, p := range c.RepoPaths {
+		add(p)
+	}
+	return result
 }
 
 func ApolloDir() string {
@@ -67,6 +92,9 @@ func Save(cfg Config) error {
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("APOLLO_REPO_PATH"); v != "" {
 		cfg.RepoPath = v
+	}
+	if v := os.Getenv("APOLLO_REPO_PATHS"); v != "" {
+		cfg.RepoPaths = strings.Split(v, ",")
 	}
 	if v := os.Getenv("APOLLO_SEED_DEPTH"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

@@ -6,29 +6,34 @@ import (
 	"github.com/walter/apollo/internal/watcher"
 )
 
-type RepoInitializedMsg struct {
-	RepoID int64
-	Repo   *git.Repo
+type ReposInitializedMsg struct {
+	Handles []RepoHandle
 }
 
-type SeedDoneMsg struct {
+type RepoSeedResult struct {
+	RepoID  int64
+	Path    string
 	Commits []git.CommitInfo
 }
 
-type WatcherReadyMsg struct {
-	Ch   <-chan watcher.Event
-	Stop func()
+type AllSeedDoneMsg struct {
+	PerRepo []RepoSeedResult
 }
 
-type WatcherEventMsg struct{}
+type WatchersReadyMsg struct {
+	Mux *watcher.Mux
+}
+
+type WatcherEventMsg struct {
+	RepoPath string
+}
 
 type NewCommitsMsg struct {
+	RepoID  int64
 	Commits []git.CommitInfo
 }
 
-type CommitsPersistedMsg struct {
-	Commits []git.CommitInfo
-}
+type CommitsPersistedMsg struct{}
 
 type CommitsLoadedMsg struct {
 	Commits []db.CommitRow

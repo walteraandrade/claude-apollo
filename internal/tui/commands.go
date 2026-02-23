@@ -6,85 +6,119 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/aymanbagabas/go-osc52/v2"
-	"github.com/walter/apollo/internal/config"
 	"github.com/walter/apollo/internal/db"
 	"github.com/walter/apollo/internal/git"
 	"github.com/walter/apollo/internal/watcher"
 )
 
-func (m Model) initRepo() tea.Cmd {
+func (m Model) initRepos() tea.Cmd {
 	return func() tea.Msg {
-		path := config.ExpandHome(m.cfg.RepoPath)
-		repo, err := git.OpenRepo(path)
-		if err != nil {
-			return ErrorMsg{Err: fmt.Errorf("open repo %q: %w", path, err)}
+		paths := m.cfg.ResolvedPaths()
+		handles := make([]RepoHandle, len(paths))
+
+		for i, path := range paths {
+			h := RepoHandle{Path: path, Name: repoName(path)}
+
+			repo, err := git.OpenRepo(path)
+			if err != nil {
+				h.Err = fmt.Errorf("open repo %q: %w", path, err)
+				handles[i] = h
+				continue
+			}
+			h.Repo = repo
+
+			repoID, err := db.UpsertRepo(m.database, h.Name, path)
+			if err != nil {
+				h.Err = fmt.Errorf("upsert repo %q: %w", path, err)
+				handles[i] = h
+				continue
+			}
+			h.RepoID = repoID
+			handles[i] = h
 		}
 
-		repoID, err := db.UpsertRepo(m.database, repoName(path), path)
-		if err != nil {
-			return ErrorMsg{Err: fmt.Errorf("upsert repo: %w", err)}
-		}
-
-		return RepoInitializedMsg{RepoID: repoID, Repo: repo}
+		return ReposInitializedMsg{Handles: handles}
 	}
 }
 
-func (m Model) seedCommits() tea.Cmd {
+func (m Model) seedAllCommits() tea.Cmd {
 	return func() tea.Msg {
-		if m.repo == nil {
-			return SeedDoneMsg{}
-		}
+		var results []RepoSeedResult
+		for _, h := range m.handles {
+			if h.Err != nil || h.Repo == nil {
+				continue
+			}
 
-		path := config.ExpandHome(m.cfg.RepoPath)
-		r, err := db.GetRepoByPath(m.database, path)
-		if err != nil || r == nil {
-			return SeedDoneMsg{}
-		}
+			r, err := db.GetRepoByPath(m.database, h.Path)
+			if err != nil || r == nil {
+				continue
+			}
 
-		var commits []git.CommitInfo
-		if r.LastCommitHash == "" {
-			commits, err = m.repo.SeedCommits(m.cfg.SeedDepth)
-		} else {
-			commits, err = m.repo.ReadNewCommits(r.LastCommitHash, m.cfg.SeedDepth)
-		}
-		if err != nil || len(commits) == 0 {
-			return SeedDoneMsg{}
-		}
+			var commits []git.CommitInfo
+			if r.LastCommitHash == "" {
+				commits, err = h.Repo.SeedCommits(m.cfg.SeedDepth)
+			} else {
+				commits, err = h.Repo.ReadNewCommits(r.LastCommitHash, m.cfg.SeedDepth)
+			}
+			if err != nil || len(commits) == 0 {
+				continue
+			}
 
-		return SeedDoneMsg{Commits: commits}
+			results = append(results, RepoSeedResult{
+				RepoID:  h.RepoID,
+				Path:    h.Path,
+				Commits: commits,
+			})
+		}
+		return AllSeedDoneMsg{PerRepo: results}
 	}
 }
 
-func (m Model) persistCommits(commits []git.CommitInfo) tea.Cmd {
+func (m Model) persistAllCommits(results []RepoSeedResult) tea.Cmd {
 	return func() tea.Msg {
-		for _, c := range commits {
-			if err := db.InsertCommit(m.database, m.repoID, c.Hash, c.Author, c.Subject, c.Body, c.Branch, c.Timestamp); err != nil {
-				return ErrorMsg{Err: fmt.Errorf("insert commit %s: %w", c.Hash[:7], err)}
+		for _, res := range results {
+			handle := m.handleByPath(res.Path)
+			name := ""
+			if handle != nil {
+				name = handle.Name
+			}
+
+			for _, c := range res.Commits {
+				if err := db.InsertCommit(m.database, res.RepoID, c.Hash, c.Author, c.Subject, c.Body, c.Branch, c.Timestamp); err != nil {
+					return ErrorMsg{Err: fmt.Errorf("insert commit %s: %w", c.Hash[:7], err)}
+				}
+			}
+
+			last := res.Commits[len(res.Commits)-1]
+			if err := db.UpdateLastCommitHash(m.database, res.RepoID, last.Hash); err != nil {
+				return ErrorMsg{Err: fmt.Errorf("update last hash: %w", err)}
+			}
+
+			if m.notifier != nil {
+				prefix := ""
+				if len(m.handles) > 1 && name != "" {
+					prefix = "[" + name + "] "
+				}
+				for _, c := range res.Commits {
+					m.notifier.Notify(prefix+"New commit", c.Subject)
+				}
 			}
 		}
-
-		last := commits[len(commits)-1]
-		if err := db.UpdateLastCommitHash(m.database, m.repoID, last.Hash); err != nil {
-			return ErrorMsg{Err: fmt.Errorf("update last hash: %w", err)}
-		}
-
-		if m.notifier != nil {
-			for _, c := range commits {
-				m.notifier.Notify("New commit", c.Subject)
-			}
-		}
-
-		return CommitsPersistedMsg{Commits: commits}
+		return CommitsPersistedMsg{}
 	}
 }
 
-func (m Model) loadCommits() tea.Cmd {
+func (m Model) loadAllCommits() tea.Cmd {
 	return func() tea.Msg {
-		commits, err := db.ListCommits(m.database, m.repoID, db.FilterAll)
+		ids := m.repoIDs()
+		if len(ids) == 0 {
+			return CommitsLoadedMsg{}
+		}
+		commits, err := db.ListAllCommits(m.database, ids, db.FilterAll)
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}
-		stats, err := db.GetStats(m.database, m.repoID)
+		stats, err := db.GetAggregateStats(m.database, ids)
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}
@@ -92,47 +126,91 @@ func (m Model) loadCommits() tea.Cmd {
 	}
 }
 
-func (m Model) startWatcher() tea.Cmd {
+func (m Model) startAllWatchers() tea.Cmd {
 	return func() tea.Msg {
-		path := config.ExpandHome(m.cfg.RepoPath)
-		ch, stop, err := watcher.Watch(path, time.Duration(m.cfg.DebounceMs)*time.Millisecond)
-		if err != nil {
-			return ErrorMsg{Err: fmt.Errorf("watch %q: %w", path, err)}
+		mux := watcher.NewMux()
+		for i := range m.handles {
+			h := &m.handles[i]
+			if h.Err != nil || h.Repo == nil {
+				continue
+			}
+			ch, stop, err := watcher.Watch(h.Path, time.Duration(m.cfg.DebounceMs)*time.Millisecond)
+			if err != nil {
+				h.Err = fmt.Errorf("watch %q: %w", h.Path, err)
+				continue
+			}
+			h.WatchCh = ch
+			h.Stop = stop
+			mux.Add(ch)
 		}
-		return WatcherReadyMsg{Ch: ch, Stop: stop}
+		return WatchersReadyMsg{Mux: mux}
 	}
 }
 
-func (m Model) listenWatcher() tea.Cmd {
-	if m.watchCh == nil {
+func (m Model) listenMux() tea.Cmd {
+	if m.mux == nil {
 		return nil
 	}
-	ch := m.watchCh
+	ch := m.mux.Events()
 	return func() tea.Msg {
-		_, ok := <-ch
+		ev, ok := <-ch
 		if !ok {
 			return nil
 		}
-		return WatcherEventMsg{}
+		return WatcherEventMsg{RepoPath: ev.RepoPath}
 	}
 }
 
-func (m Model) readNewCommits() tea.Cmd {
+func (m Model) readNewCommitsForRepo(repoPath string) tea.Cmd {
 	return func() tea.Msg {
-		if m.repo == nil {
+		h := m.handleByPath(repoPath)
+		if h == nil || h.Repo == nil {
 			return NewCommitsMsg{}
 		}
-		path := config.ExpandHome(m.cfg.RepoPath)
-		r, err := db.GetRepoByPath(m.database, path)
+		r, err := db.GetRepoByPath(m.database, h.Path)
 		if err != nil || r == nil {
 			return NewCommitsMsg{}
 		}
-
-		commits, err := m.repo.ReadNewCommits(r.LastCommitHash, m.cfg.SeedDepth)
+		commits, err := h.Repo.ReadNewCommits(r.LastCommitHash, m.cfg.SeedDepth)
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}
-		return NewCommitsMsg{Commits: commits}
+		return NewCommitsMsg{RepoID: h.RepoID, Commits: commits}
+	}
+}
+
+func (m Model) persistCommits(repoID int64, commits []git.CommitInfo) tea.Cmd {
+	return func() tea.Msg {
+		var handle *RepoHandle
+		for i := range m.handles {
+			if m.handles[i].RepoID == repoID {
+				handle = &m.handles[i]
+				break
+			}
+		}
+
+		for _, c := range commits {
+			if err := db.InsertCommit(m.database, repoID, c.Hash, c.Author, c.Subject, c.Body, c.Branch, c.Timestamp); err != nil {
+				return ErrorMsg{Err: fmt.Errorf("insert commit %s: %w", c.Hash[:7], err)}
+			}
+		}
+
+		last := commits[len(commits)-1]
+		if err := db.UpdateLastCommitHash(m.database, repoID, last.Hash); err != nil {
+			return ErrorMsg{Err: fmt.Errorf("update last hash: %w", err)}
+		}
+
+		if m.notifier != nil && handle != nil {
+			prefix := ""
+			if len(m.handles) > 1 {
+				prefix = "[" + handle.Name + "] "
+			}
+			for _, c := range commits {
+				m.notifier.Notify(prefix+"New commit", c.Subject)
+			}
+		}
+
+		return CommitsPersistedMsg{}
 	}
 }
 

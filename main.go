@@ -18,17 +18,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if len(os.Args) > 1 {
-		cfg.RepoPath = os.Args[1]
+	for _, arg := range os.Args[1:] {
+		cfg.RepoPaths = append(cfg.RepoPaths, arg)
 	}
 
-	if cfg.RepoPath == "" {
+	if len(cfg.ResolvedPaths()) == 0 {
 		cwd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "getwd: %v\n", err)
 			os.Exit(1)
 		}
-		cfg.RepoPath = cwd
+		cfg.RepoPaths = append(cfg.RepoPaths, cwd)
 	}
 
 	if err := os.MkdirAll(config.ApolloDir(), 0755); err != nil {
